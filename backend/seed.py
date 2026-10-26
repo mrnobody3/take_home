@@ -6,9 +6,11 @@ streamed into Postgres with a single binary COPY (asyncpg.copy_records_to_table)
 
 Usage:
     docker compose exec backend python seed.py
-    # or from the host, against the dockerised db:
+    # or from the host, against the dockerised or remote db:
     DATABASE_URL=postgresql://waypoint:waypoint_dev_password@localhost:5432/waypoint \
         python backend/seed.py
+    # or auto-seed on startup only if database is empty:
+    python backend/seed.py --if-empty
 
 Env:
     DATABASE_URL  postgresql[+asyncpg]://...  (default: local docker db)
@@ -20,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -152,6 +155,19 @@ def telemetry_rows(trip_ids: Sequence[int], loop: Sequence[Sample]) -> Iterator[
                 yield (trip_id, offset + t, lat, lon, speed, fuel)
 
 
+async def is_already_seeded(dsn: str) -> bool:
+    """Check if the database already has seeded data."""
+    try:
+        conn = await asyncpg.connect(dsn)
+        try:
+            count: int | None = await conn.fetchval("SELECT count(*) FROM users")
+            return bool(count and count > 0)
+        finally:
+            await conn.close()
+    except Exception:
+        return False
+
+
 # --------------------------------------------------------------------------- #
 # Steps
 # --------------------------------------------------------------------------- #
@@ -249,8 +265,14 @@ def print_summary(users: Sequence[SeededUser], trips: int, rows: int, elapsed: f
 
 
 async def main() -> None:
-    started = time.perf_counter()
     dsn, sqlalchemy_url = database_urls()
+
+    if "--if-empty" in sys.argv or os.environ.get("SEED_IF_EMPTY") == "true":
+        if await is_already_seeded(dsn):
+            print("Database already contains seeded records. Skipping seed.")
+            return
+
+    started = time.perf_counter()
     fixture_path = Path(os.environ.get("FIXTURE_PATH", DEFAULT_FIXTURE_PATH))
 
     loop = load_fixture(fixture_path)

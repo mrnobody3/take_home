@@ -89,22 +89,25 @@ npm run format
 
 ---
 
-## Cloud Deployment (Render.com Blueprint)
+## Cloud Deployment (Render.com)
 
-The repository includes a ready-to-use [`render.yaml`](render.yaml) blueprint specification to deploy the entire stack to [Render.com](https://render.com) with a single click:
+The repository is configured to deploy to [Render.com](https://render.com) without requiring any paid add-ons or Shell access.
 
-1. Push your repository to GitHub.
-2. In the [Render Dashboard](https://dashboard.render.com), click **New** → **Blueprint**.
-3. Connect your repository. Render will automatically detect [`render.yaml`](render.yaml) and configure:
+### Automatic Blueprint Deployment
+1. In the [Render Dashboard](https://dashboard.render.com), click **Blueprints** in the left sidebar (or **New** → **Blueprint**).
+2. Connect your repository. Render automatically reads [`render.yaml`](render.yaml) and provisions:
    - **`waypoint-db`**: Managed PostgreSQL 16 database.
    - **`waypoint-backend`**: Python FastAPI web service with automatic database linking and secret generation.
-   - **`waypoint-frontend`**: React Vite static site with automatic SPA rewrite routing.
-4. **Seed the database on Render:**
-   Once deployed, run the seed script from your machine against Render's external Postgres connection string:
+   - **`waypoint-frontend`**: React Vite static site with SPA routing.
+3. **Automatic Seeding:** The backend start command includes `python backend/seed.py --if-empty`. On the first boot, it detects that the database is unpopulated and streams all **691,200 rows** in ~5 seconds automatically. On subsequent boots, it skips immediately.
+
+### Manual Reseeding (Free — No Paid Shell Tab Needed)
+If you ever want to reset and reseed the Render database from your local machine:
+1. In the Render Dashboard, open **`waypoint-db`** and copy the **External Database URL** (includes `?sslmode=require`).
+2. Run from your local terminal:
    ```bash
-   DATABASE_URL="<render-external-postgres-connection-string>" python backend/seed.py
+   DATABASE_URL="<external-database-url>" python backend/seed.py
    ```
-   *(Or run `python backend/seed.py` directly inside the backend Web Shell in the Render dashboard).*
 
 ---
 
@@ -153,7 +156,7 @@ For detailed rationale and tradeoffs, refer to [DECISIONS.md](DECISIONS.md).
 │   ├── auth.py                 # JWT issuance, password verification & user resolution
 │   ├── models.py               # SQLAlchemy 2.0 async models with PostgreSQL REAL/DOUBLE_PRECISION
 │   ├── database.py             # Async database session & engine management
-│   ├── seed.py                 # 691k row high-throughput binary seed script
+│   ├── seed.py                 # 691k row high-throughput binary seed script with --if-empty
 │   ├── test_api.py             # RBAC, token expiration & windowing integration test suite
 │   ├── ruff.toml               # Ruff linter and formatter configuration
 │   ├── mypy.ini                # Python static type checker configuration
