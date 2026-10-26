@@ -1,4 +1,4 @@
-name: CI/CD Pipeline
+name: Quality Checks & Tests
 
 on:
   push:
@@ -42,23 +42,3 @@ jobs:
         run: |
           cd frontend
           npm run check
-
-  deploy:
-    name: Deploy to Production
-    needs: verify
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        if: ${{ env.SERVER_HOST != '' }}
-        env:
-          SERVER_HOST: ${{ secrets.SERVER_HOST }}
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER || 'root' }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            cd /opt/waypoint
-            git pull origin main
-            docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build

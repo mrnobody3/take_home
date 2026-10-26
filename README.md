@@ -89,6 +89,25 @@ npm run format
 
 ---
 
+## Cloud Deployment (Render.com Blueprint)
+
+The repository includes a ready-to-use [`render.yaml`](render.yaml) blueprint specification to deploy the entire stack to [Render.com](https://render.com) with a single click:
+
+1. Push your repository to GitHub.
+2. In the [Render Dashboard](https://dashboard.render.com), click **New** → **Blueprint**.
+3. Connect your repository. Render will automatically detect [`render.yaml`](render.yaml) and configure:
+   - **`waypoint-db`**: Managed PostgreSQL 16 database.
+   - **`waypoint-backend`**: Python FastAPI web service with automatic database linking and secret generation.
+   - **`waypoint-frontend`**: React Vite static site with automatic SPA rewrite routing.
+4. **Seed the database on Render:**
+   Once deployed, run the seed script from your machine against Render's external Postgres connection string:
+   ```bash
+   DATABASE_URL="<render-external-postgres-connection-string>" python backend/seed.py
+   ```
+   *(Or run `python backend/seed.py` directly inside the backend Web Shell in the Render dashboard).*
+
+---
+
 ## Architectural Highlights
 
 For detailed rationale and tradeoffs, refer to [DECISIONS.md](DECISIONS.md).
@@ -118,6 +137,7 @@ For detailed rationale and tradeoffs, refer to [DECISIONS.md](DECISIONS.md).
 ```text
 .
 ├── docker-compose.yml          # Single-command local environment (db, backend, frontend)
+├── render.yaml                 # Render.com Blueprint configuration (DB, API, Frontend)
 ├── check.sh                    # Unified one-command quality & test runner
 ├── Makefile                    # Make targets for check, test, lint, typecheck, format
 ├── package.json                # Root package for running 'npm run check'
