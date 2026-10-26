@@ -1,0 +1,34 @@
+{
+    # Global options
+    email {$ACME_EMAIL:admin@example.com}
+}
+
+{$DOMAIN:localhost} {
+    # Compress responses (modern zstd and gzip)
+    encode zstd gzip
+
+    # API and telemetry endpoints routed to FastAPI backend
+    @api {
+        path /api/*
+        path /auth/*
+        path /vehicles/*
+        path /trips/*
+        path /health
+        path /docs*
+        path /openapi.json
+    }
+
+    handle @api {
+        uri strip_prefix /api
+        reverse_proxy backend:8000 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Frontend Single Page App routed to Nginx static container
+    handle {
+        reverse_proxy frontend:80
+    }
+}
