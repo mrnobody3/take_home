@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Truck, LogOut, ShieldCheck, UserCheck, ChevronRight } from 'lucide-react';
 import {
   CurrentUser,
@@ -32,12 +33,23 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  const handleLogout = () => {
+  const queryClient = useQueryClient();
+
+  const handleLogout = useCallback(() => {
     clearStoredAuth();
+    queryClient.clear();
     setCurrentUser(null);
     setSelectedVehicle(null);
     setSelectedTrip(null);
-  };
+  }, [queryClient]);
+
+  useEffect(() => {
+    const onUnauthorized = () => {
+      handleLogout();
+    };
+    window.addEventListener('auth:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('auth:unauthorized', onUnauthorized);
+  }, [handleLogout]);
 
   const handleSelectTrip = (vehicle: Vehicle, trip: Trip) => {
     setSelectedVehicle(vehicle);

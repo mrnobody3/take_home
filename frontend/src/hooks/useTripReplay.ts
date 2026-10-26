@@ -8,6 +8,10 @@ export const DEFAULT_DURATION = 86400;
 /** Default window chunk size: 600 seconds (10 minutes) */
 export const CHUNK_SIZE = 600;
 
+/** Supported zoom window levels in seconds: 1m, 5m, 10m, 30m, 1h */
+export const ZOOM_LEVELS = [60, 300, 600, 1800, 3600] as const;
+export type ZoomLevel = (typeof ZOOM_LEVELS)[number];
+
 export interface UseTripReplayOptions {
   /** The ID of the active trip. If null/undefined, telemetry fetching is disabled. */
   tripId: number | null | undefined;
@@ -15,7 +19,7 @@ export interface UseTripReplayOptions {
   duration?: number;
   /** Initial playback position in seconds (default: 0) */
   initialTime?: number;
-  /** Window size in seconds for chunking queries (default: 600) */
+  /** Initial window size in seconds for chunking queries (default: 600) */
   chunkSize?: number;
   /** Whether replay begins in playing state (default: false) */
   autoPlay?: boolean;
@@ -38,15 +42,25 @@ export interface UseTripReplayReturn {
   /** Step backward by N seconds (default: 1) */
   stepBackward: (seconds?: number) => void;
 
-  // --- Window / Chunk Information ---
-  /** Index of current 600s chunk: Math.floor(currentTime / chunkSize) */
+  // --- Window / Chunk / Zoom Information ---
+  /** Index of current chunk */
   chunkIndex: number;
+  /** Total number of chunks at current zoom */
+  totalChunks: number;
   /** Start second of the current window (inclusive) */
   fromT: number;
   /** End second of the current window (inclusive) */
   toT: number;
-  /** Chunk window size in seconds (e.g. 600) */
+  /** Chunk window size in seconds (e.g. 60, 300, 600, 1800, 3600) */
   chunkSize: number;
+  /** Active zoom level in seconds */
+  zoomLevel: number;
+  /** Set window zoom level */
+  setZoomLevel: (zoom: number) => void;
+  /** Zoom in (narrower window) */
+  zoomIn: () => void;
+  /** Zoom out (wider window) */
+  zoomOut: () => void;
 
   // --- Telemetry Data & Active Point ---
   /** Current active telemetry sample matching currentTime */
@@ -59,7 +73,7 @@ export interface UseTripReplayReturn {
   telemetryWindow: TelemetryWindow | undefined;
 
   // --- React Query Status ---
-  /** True while the active chunk is loading for the first time */
+  /** True while the active chunk is loading for the first time with no data */
   isLoading: boolean;
   /** True while any background fetch is in progress */
   isFetching: boolean;
@@ -90,20 +104,10 @@ export interface UseTripReplayReturn {
 /**
  * Custom React hook for scrubbing and replaying vehicle telemetry.
  *
- * Manages `currentTime` (0 to 86,400s), calculates the active 600-second window,
- * fetches chunks on demand via TanStack Query with `staleTime: Infinity`,
+ * Manages `currentTime` (0 to 86,400s), calculates the active window based on zoom,
+ * debounces fetch triggers during rapid scrubbing to prevent request floods,
+ * keeps previous data via TanStack Query to eliminate jarring spinners,
  * prefetches adjacent chunks for smooth scrubbing, and computes the active telemetry point.
- *
- * @example
- * ```tsx
- * const {
- *   currentTime,
- *   setCurrentTime,
- *   activePoint,
- *   isPlaying,
- *   togglePlay,
- * } = useTripReplay({ tripId: 1 });
- * ```
  */
 export function useTripReplay(
   tripIdOrOptions: number | null | undefined | UseTripReplayOptions
@@ -117,7 +121,7 @@ export function useTripReplay(
     tripId,
     duration = DEFAULT_DURATION,
     initialTime = 0,
-    chunkSize = CHUNK_SIZE,
+    chunkSize: initialChunkSize = CHUNK_SIZE,
     autoPlay = false,
     initialPlaybackSpeed = 1,
   } = options;
@@ -137,6 +141,7 @@ export function useTripReplay(
   );
   const [isPlaying, setIsPlaying] = useState<boolean>(autoPlay);
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(initialPlaybackSpeed);
+  const [zoomLevel, setZoomLevelState] = useState<number>(initialChunkSize);
 
   // Safe setter with clamping and updater function support
   const setCurrentTime = useCallback(
@@ -149,16 +154,37 @@ export function useTripReplay(
     [clampTime]
   );
 
-  // 3. Window calculation (e.g. 0-600, 600-1200)
-  const chunkIndex = Math.floor(currentTime / chunkSize);
-  const fromT = chunkIndex * chunkSize;
-  const toT = Math.min(fromT + chunkSize, duration);
+  // 3. Debounced fetch time for window querying during fast scrubbing
+  const [debouncedScrubTime, setDebouncedScrubTime] = useState<number>(() =>
+    clampTime(initialTime)
+  );
 
-  // 4. Fetch telemetry chunk via TanStack Query
+  useEffect(() => {
+    if (isPlaying) return;
+    // 120ms debounce during user slider drag/scrubbing
+    const timer = setTimeout(() => {
+      setDebouncedScrubTime(currentTime);
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [currentTime, isPlaying]);
+
+  // Immediate sync during active playback; debounced during manual scrubbing
+  const fetchTime = isPlaying ? currentTime : debouncedScrubTime;
+
+  // 4. Window calculation with boundary protection for t = duration (86,400s)
+  const currentChunkSize = zoomLevel;
+  const totalChunks = Math.max(1, Math.ceil(duration / currentChunkSize));
+  const maxChunkIndex = Math.max(0, totalChunks - 1);
+  const rawChunkIndex = Math.floor(fetchTime / currentChunkSize);
+  const chunkIndex = Math.min(Math.max(0, rawChunkIndex), maxChunkIndex);
+  const fromT = chunkIndex * currentChunkSize;
+  const toT = Math.min(fromT + currentChunkSize, duration);
+
+  // 5. Fetch telemetry chunk via TanStack Query
   const queryClient = useQueryClient();
 
   const query = useQuery<TelemetryWindow, ApiError>({
-    queryKey: ['telemetry', tripId, chunkIndex],
+    queryKey: ['telemetry', tripId, currentChunkSize, chunkIndex],
     queryFn: () => {
       if (!tripId) {
         throw new Error('Trip ID is required to fetch telemetry');
@@ -166,22 +192,24 @@ export function useTripReplay(
       return fetchTelemetry(tripId, fromT, toT);
     },
     enabled: typeof tripId === 'number' && tripId > 0,
-    // Telemetry historical data never changes: cache permanently
+    // Telemetry historical data never changes: cache aggressively
     staleTime: Infinity,
     gcTime: 1000 * 60 * 30, // 30 minutes cache retention
+    // Keep previous window samples while new chunk fetches: avoids replacing chart with spinner!
+    placeholderData: (previousData) => previousData,
   });
 
-  // 5. Intelligent prefetching of adjacent chunks for buttery-smooth scrubbing
+  // 6. Intelligent prefetching of adjacent chunks for buttery-smooth scrubbing
   useEffect(() => {
     if (typeof tripId !== 'number' || tripId <= 0) return;
 
     // Prefetch next chunk
     const nextChunkIndex = chunkIndex + 1;
-    const nextFromT = nextChunkIndex * chunkSize;
-    if (nextFromT < duration) {
-      const nextToT = Math.min(nextFromT + chunkSize, duration);
+    if (nextChunkIndex <= maxChunkIndex) {
+      const nextFromT = nextChunkIndex * currentChunkSize;
+      const nextToT = Math.min(nextFromT + currentChunkSize, duration);
       queryClient.prefetchQuery({
-        queryKey: ['telemetry', tripId, nextChunkIndex],
+        queryKey: ['telemetry', tripId, currentChunkSize, nextChunkIndex],
         queryFn: () => fetchTelemetry(tripId, nextFromT, nextToT),
         staleTime: Infinity,
       });
@@ -190,22 +218,23 @@ export function useTripReplay(
     // Prefetch previous chunk if scrubbing backward
     const prevChunkIndex = chunkIndex - 1;
     if (prevChunkIndex >= 0) {
-      const prevFromT = prevChunkIndex * chunkSize;
-      const prevToT = Math.min(prevFromT + chunkSize, duration);
+      const prevFromT = prevChunkIndex * currentChunkSize;
+      const prevToT = Math.min(prevFromT + currentChunkSize, duration);
       queryClient.prefetchQuery({
-        queryKey: ['telemetry', tripId, prevChunkIndex],
+        queryKey: ['telemetry', tripId, currentChunkSize, prevChunkIndex],
         queryFn: () => fetchTelemetry(tripId, prevFromT, prevToT),
         staleTime: Infinity,
       });
     }
-  }, [tripId, chunkIndex, chunkSize, duration, queryClient]);
+  }, [tripId, chunkIndex, currentChunkSize, maxChunkIndex, duration, queryClient]);
 
-  // 6. Find current active point matching currentTime
+  // 7. Find current active point matching currentTime
   const activePoint = useMemo<TelemetryPoint | null>(() => {
     const samples = query.data?.samples;
     if (!samples || samples.length === 0) return null;
 
-    const targetT = Math.floor(currentTime);
+    // Ensure target second is clamped within available samples [0, duration - 1]
+    const targetT = Math.max(0, Math.min(Math.floor(currentTime), duration - 1));
 
     // Fast O(1) path: contiguous 1 Hz data where index = targetT - fromT
     const directIdx = targetT - fromT;
@@ -236,10 +265,11 @@ export function useTripReplay(
       }
     }
 
-    return closestBefore ?? samples[0] ?? null;
-  }, [query.data?.samples, currentTime, fromT]);
+    // Fallback: closest point before, last point, or first point in chunk
+    return closestBefore ?? samples[samples.length - 1] ?? samples[0] ?? null;
+  }, [query.data?.samples, currentTime, fromT, duration]);
 
-  // 7. Playback animation loop
+  // 8. Playback animation loop
   const isPlayingRef = useRef(isPlaying);
   const playbackSpeedRef = useRef(playbackSpeed);
 
@@ -279,7 +309,31 @@ export function useTripReplay(
     return () => cancelAnimationFrame(frameId);
   }, [isPlaying, duration]);
 
-  // 8. Control actions
+  // 9. Zoom controls
+  const zoomIn = useCallback(() => {
+    setZoomLevelState((current) => {
+      const idx = ZOOM_LEVELS.indexOf(current as ZoomLevel);
+      if (idx > 0) return ZOOM_LEVELS[idx - 1];
+      return current;
+    });
+  }, []);
+
+  const zoomOut = useCallback(() => {
+    setZoomLevelState((current) => {
+      const idx = ZOOM_LEVELS.indexOf(current as ZoomLevel);
+      if (idx !== -1 && idx < ZOOM_LEVELS.length - 1) return ZOOM_LEVELS[idx + 1];
+      return current;
+    });
+  }, []);
+
+  const setZoomLevel = useCallback((zoom: number) => {
+    const match = ZOOM_LEVELS.find((lvl) => lvl === zoom);
+    if (match) {
+      setZoomLevelState(match);
+    }
+  }, []);
+
+  // 10. Control actions
   const seekTo = useCallback(
     (time: number) => {
       setCurrentTime(time);
@@ -305,6 +359,8 @@ export function useTripReplay(
   const pause = useCallback(() => setIsPlaying(false), []);
   const togglePlay = useCallback(() => setIsPlaying((prev) => !prev), []);
 
+  const samples = query.data?.samples ?? [];
+
   return {
     currentTime,
     duration,
@@ -314,20 +370,27 @@ export function useTripReplay(
     stepBackward,
 
     chunkIndex,
+    totalChunks,
     fromT,
     toT,
-    chunkSize,
+    chunkSize: currentChunkSize,
+    zoomLevel,
+    setZoomLevel,
+    zoomIn,
+    zoomOut,
 
     currentPoint: activePoint,
     activePoint,
-    samples: query.data?.samples ?? [],
+    samples,
     telemetryWindow: query.data,
 
     isLoading: query.isLoading,
     isFetching: query.isFetching,
     isError: query.isError,
     error: query.error,
-    refetch: query.refetch,
+    refetch: () => {
+      void query.refetch();
+    },
 
     isPlaying,
     setIsPlaying,
@@ -338,5 +401,3 @@ export function useTripReplay(
     setPlaybackSpeed,
   };
 }
-
-export default useTripReplay;

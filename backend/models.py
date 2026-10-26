@@ -14,13 +14,13 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Enum,
-    Float,
     ForeignKey,
     Index,
     Integer,
     MetaData,
     String,
 )
+from sqlalchemy.dialects.postgresql import DOUBLE_PRECISION, REAL
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # Deterministic constraint names -> stable, readable migrations.
@@ -129,7 +129,7 @@ class TelemetrySample(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     trip_id: Mapped[int] = mapped_column(ForeignKey("trips.id", ondelete="CASCADE"))
     t: Mapped[int] = mapped_column(Integer)  # seconds from trip start
-    lat: Mapped[float] = mapped_column(Float)
-    lon: Mapped[float] = mapped_column(Float)
-    speed_kph: Mapped[float] = mapped_column(Float)
-    fuel_pct: Mapped[float] = mapped_column(Float)
+    lat: Mapped[float] = mapped_column(DOUBLE_PRECISION)
+    lon: Mapped[float] = mapped_column(DOUBLE_PRECISION)
+    speed_kph: Mapped[float] = mapped_column(REAL)
+    fuel_pct: Mapped[float] = mapped_column(REAL)

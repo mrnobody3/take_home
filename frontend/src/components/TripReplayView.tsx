@@ -19,8 +19,12 @@ import {
   BarChart2,
   Activity,
   ArrowLeft,
+  ZoomIn,
+  ZoomOut,
+  AlertCircle,
+  RotateCw,
 } from 'lucide-react';
-import { useTripReplay } from '../hooks/useTripReplay';
+import { useTripReplay, ZOOM_LEVELS } from '../hooks/useTripReplay';
 import { fetchTripSummary, TelemetryWindow, ApiError } from '../api';
 import {
   formatSeconds,
@@ -118,20 +122,28 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
   onClose,
 }) => {
   const TOTAL_DURATION = 86400; // 24 hours
-  const CHUNK_SIZE = 600; // 10 minutes
+  const CHUNK_SIZE = 600; // 10 minutes default
 
-  // 1. Core Scrubbing & Window Hook
+  // 1. Core Scrubbing & Window Hook with Zoom & Debounce
   const {
     currentTime,
     setCurrentTime,
     duration,
     chunkIndex,
+    totalChunks,
     fromT,
     toT,
+    zoomLevel,
+    setZoomLevel,
+    zoomIn,
+    zoomOut,
     activePoint,
     samples,
     isLoading,
     isFetching,
+    isError,
+    error,
+    refetch,
     isPlaying,
     togglePlay,
     seekTo,
@@ -146,10 +158,13 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
   });
 
   // 2. Fetch Macro-level 24h Summary Telemetry (downsampled step=30, ~2880 points)
-  const { data: summaryData, isLoading: isSummaryLoading } = useQuery<
-    TelemetryWindow,
-    ApiError
-  >({
+  const {
+    data: summaryData,
+    isLoading: isSummaryLoading,
+    isError: isSummaryError,
+    error: summaryError,
+    refetch: refetchSummary,
+  } = useQuery<TelemetryWindow, ApiError>({
     queryKey: ['telemetry-summary', tripId],
     queryFn: () => fetchTripSummary(tripId, TOTAL_DURATION, 30),
     staleTime: Infinity,
@@ -179,7 +194,7 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
     return () => observer.disconnect();
   }, []);
 
-  // --- Detailed 600s Chunk Speed Chart (uPlot) ---
+  // --- Detailed Chunk Speed Chart (uPlot) ---
   const chunkUPlotData = useMemo<uPlot.AlignedData>(() => {
     if (samples.length === 0) {
       return [
@@ -334,9 +349,9 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
   const windowLeftPct = (fromT / TOTAL_DURATION) * 100;
   const windowWidthPct = Math.min(
     100 - windowLeftPct,
-    (CHUNK_SIZE / TOTAL_DURATION) * 100
+    ((toT - fromT) / TOTAL_DURATION) * 100
   );
-  const needlePct = (currentTime / TOTAL_DURATION) * 100;
+  const needlePct = Math.min(100, Math.max(0, (currentTime / TOTAL_DURATION) * 100));
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col space-y-4 p-5">
@@ -373,7 +388,7 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
               )}
             </div>
             <p className="text-xs text-slate-400">
-              Scrubbing 24h trip in 600s chunks with TanStack Query caching
+              Scrubbing 24h trip with bidirectional zoom & TanStack Query caching
             </p>
           </div>
         </div>
@@ -441,6 +456,8 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
           <div className="flex items-center gap-3 text-[11px] text-slate-500">
             {isSummaryLoading ? (
               <span className="text-purple-400 animate-pulse">Loading summary…</span>
+            ) : isSummaryError ? (
+              <span className="text-rose-400">Failed to load summary</span>
             ) : (
               <span>{summaryData?.samples.length ?? 0} points (step=30)</span>
             )}
@@ -454,7 +471,25 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
           className="w-full h-[95px] overflow-hidden rounded-lg bg-slate-900/60 border border-slate-800/50 relative cursor-pointer group"
           title="Click to jump to that timestamp in the 24-hour day"
         >
-          {isSummaryLoading ? (
+          {isSummaryError ? (
+            <div className="w-full h-full flex items-center justify-center text-xs text-rose-400 gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>
+                Failed to load 24h summary (
+                {summaryError instanceof Error ? summaryError.message : 'Error'}).
+              </span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void refetchSummary();
+                }}
+                className="px-2 py-0.5 rounded bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 font-medium"
+              >
+                Retry
+              </button>
+            </div>
+          ) : isSummaryLoading ? (
             <div className="w-full h-full flex items-center justify-center text-xs text-slate-500">
               <span className="w-3 h-3 rounded-full border-2 border-purple-400 border-t-transparent animate-spin mr-2"></span>
               Loading 24h summary overview…
@@ -463,11 +498,11 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
             <>
               <UplotReact options={summaryUPlotOptions} data={summaryUPlotData} />
 
-              {/* Highlight box representing the active 600s chunk */}
+              {/* Highlight box representing the active zoomed window */}
               <div
                 style={{
                   left: `${windowLeftPct}%`,
-                  width: `${Math.max(1, windowWidthPct)}%`,
+                  width: `${Math.max(0.5, windowWidthPct)}%`,
                 }}
                 className="absolute top-0 bottom-0 bg-indigo-500/25 border-x-2 border-indigo-400 pointer-events-none transition-all duration-100"
               />
@@ -499,11 +534,12 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-slate-900 border border-slate-800 text-[11px] text-indigo-400 font-medium">
               <Layers className="w-3 h-3" />
-              Chunk #{chunkIndex} ({fromT}s – {toT}s)
+              Window #{chunkIndex + 1}/{totalChunks} ({fromT}s – {toT}s)
             </span>
             {isFetching && (
-              <span className="text-[11px] text-amber-400 animate-pulse font-medium">
-                Fetching chunk…
+              <span className="text-[11px] text-amber-400 animate-pulse font-medium flex items-center gap-1">
+                <RotateCw className="w-3 h-3 animate-spin" />
+                Fetching window…
               </span>
             )}
           </div>
@@ -515,7 +551,7 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
             <input
               type="range"
               min={0}
-              max={86400}
+              max={TOTAL_DURATION}
               step={1}
               value={Math.floor(currentTime)}
               onChange={(e) => setCurrentTime(Number(e.target.value))}
@@ -544,9 +580,9 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
               type="button"
               onClick={() => seekTo(43200)}
               className="text-amber-400 font-bold hover:text-amber-300 transition-colors bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20"
-              title="Jump to midday (43,200s) — tests chunk fetching"
+              title="Jump to midday (43,200s)"
             >
-              12:00 (Midday - 43,200s)
+              12:00 (Midday)
             </button>
             <button
               type="button"
@@ -565,7 +601,7 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
           </div>
         </div>
 
-        {/* Playback Buttons & Speeds */}
+        {/* Playback Buttons, Speeds & Quick Navigation */}
         <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
           <div className="flex items-center gap-2">
             {/* Rewind 10s */}
@@ -634,31 +670,97 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
         </div>
       </div>
 
-      {/* 4. CURRENT WINDOW SPEED CHART (uPlot - 1 Hz) */}
+      {/* 4. CURRENT WINDOW SPEED CHART (uPlot - 1 Hz with Zoom) */}
       <div className="bg-slate-950/90 border border-slate-800/80 rounded-xl p-3 space-y-2">
-        <div className="flex items-center justify-between text-xs px-1">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs px-1">
           <div className="flex items-center gap-2 font-semibold text-slate-300">
             <Activity className="w-3.5 h-3.5 text-indigo-400" />
             <span>
-              Speed Profile — Current Window ({fromT}s – {toT}s at 1 Hz)
+              Speed Profile — Window ({fromT}s – {toT}s at 1 Hz)
             </span>
           </div>
-          <span className="text-[11px] text-slate-500">
-            {samples.length} telemetry samples loaded in chunk
-          </span>
+
+          {/* Zoom Controls */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-lg p-0.5">
+              <span className="text-[10px] text-slate-500 font-semibold px-1.5 uppercase">
+                Zoom:
+              </span>
+              <button
+                type="button"
+                onClick={zoomIn}
+                disabled={zoomLevel <= 60}
+                title="Zoom in (narrower window)"
+                className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-transparent"
+              >
+                <ZoomIn className="w-3.5 h-3.5" />
+              </button>
+              {ZOOM_LEVELS.map((level) => (
+                <button
+                  key={level}
+                  type="button"
+                  onClick={() => setZoomLevel(level)}
+                  className={`px-1.5 py-0.5 rounded text-[10px] font-semibold transition-colors ${
+                    zoomLevel === level
+                      ? 'bg-indigo-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                  }`}
+                >
+                  {level < 3600 ? `${level / 60}m` : '1h'}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={zoomOut}
+                disabled={zoomLevel >= 3600}
+                title="Zoom out (wider window)"
+                className="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 disabled:opacity-30 disabled:hover:bg-transparent"
+              >
+                <ZoomOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <span className="text-[11px] text-slate-500 hidden sm:inline">
+              {samples.length} points
+            </span>
+          </div>
         </div>
 
+        {/* Chart View with Error Handling & Persistent Samples */}
         <div
           ref={chartContainerRef}
           className="w-full h-[145px] overflow-hidden flex items-center justify-center rounded-lg bg-slate-900/50 border border-slate-800/40 relative"
         >
-          {isLoading ? (
+          {isError ? (
+            <div className="text-xs text-rose-400 flex items-center gap-2 p-4">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>
+                Failed to load telemetry window (
+                {error instanceof Error ? error.message : 'Error'}).
+              </span>
+              <button
+                type="button"
+                onClick={() => refetch()}
+                className="ml-2 px-2.5 py-1 rounded bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 font-medium transition-colors"
+              >
+                Retry
+              </button>
+            </div>
+          ) : isLoading && samples.length === 0 ? (
             <div className="text-xs text-slate-500 flex items-center gap-2">
               <span className="w-3 h-3 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin"></span>
-              Loading telemetry chunk…
+              Loading telemetry window…
             </div>
           ) : (
-            <UplotReact options={chunkUPlotOptions} data={chunkUPlotData} />
+            <>
+              <UplotReact options={chunkUPlotOptions} data={chunkUPlotData} />
+              {isFetching && (
+                <div className="absolute top-2 right-2 bg-slate-900/85 backdrop-blur border border-slate-700/80 px-2 py-0.5 rounded-full text-[10px] text-amber-300 flex items-center gap-1 pointer-events-none shadow">
+                  <RotateCw className="w-2.5 h-2.5 animate-spin" />
+                  Updating window…
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -704,8 +806,8 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
           >
             {/* OpenStreetMap Dark CartoDB Tiles */}
             <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-              url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             />
 
             {/* Sync map pan/zoom with active position */}
@@ -715,7 +817,7 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
               follow={followVehicle}
             />
 
-            {/* Polyline of points in the current 600s window */}
+            {/* Polyline of points in the current window */}
             {polylineCoords.length > 0 && (
               <Polyline
                 positions={polylineCoords}
@@ -750,11 +852,11 @@ export const TripReplayView: React.FC<TripReplayViewProps> = ({
                       {vehiclePlate || `Trip #${tripId}`}
                     </div>
                     <div>
-                      Time: {formatSeconds(currentTime)} ({Math.floor(currentTime)}s)
+                      t = {activePoint?.t}s ({formatSeconds(currentTime)})
                     </div>
                     <div>Speed: {formatSpeed(activePoint?.speed_kph)}</div>
                     <div>Fuel: {formatFuel(activePoint?.fuel_pct)}</div>
-                    <div className="text-[10px] text-slate-500">
+                    <div className="font-mono text-[10px] text-slate-500">
                       {formatCoordinates(activeCoord[0], activeCoord[1])}
                     </div>
                   </div>

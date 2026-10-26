@@ -17,7 +17,7 @@ As required by the assignment brief, this document provides an honest, transpare
   * Tiling 900-sample fixture 96× to generate 86,400 samples (24h) per vehicle.
   * Async streaming pipeline with `asyncpg.copy_records_to_table` and temporary index dropping for fast bulk loading (~691k rows in <5s).
 * **Telemetry Windowing & Scrubbing Hook (`frontend/src/hooks/useTripReplay.ts`):**
-  * Calculation of discrete 600-second window ranges (`fromT`, `toT`).
+  * Calculation of discrete window ranges (`fromT`, `toT`).
   * Integration with TanStack Query v5 (`useQuery`) with infinite stale time.
   * Bidirectional prefetching (`chunkIndex + 1` and `chunkIndex - 1`) and binary search point lookup.
 * **FastAPI Endpoints & RBAC Enforcement (`backend/api.py`, `backend/auth.py`):**
@@ -25,48 +25,58 @@ As required by the assignment brief, this document provides an honest, transpare
   * Windowed telemetry endpoint (`GET /trips/{id}/telemetry?from_t=...&to_t=...&step=...`) with `MAX_POINTS_PER_WINDOW` protection.
 
 ### What Was Hand-Authored, Refined, or Heavily Edited:
-* **Dependency Debugging & Lockfile Reconciliation:**
-  * Fixed an npm resolution failure when AI suggested non-existent `uplot-react@^1.3.2`. Manually verified registry versions, pinned `1.2.4` and `uplot@^1.6.32`, and ensured clean `npm ci` build inside Docker.
-* **Component Styling, UI Polish & Replay UX (`TripReplayView.tsx`, `VehicleList.tsx`):**
-  * Tailored dashboard layout, scrub bar feedback, playback speed controls (1×, 2×, 5×, 10×, 60×), dynamic Leaflet vehicle markers, and map auto-centering logic.
-  * Adjusted uPlot canvas options (dark theme colors, responsive dimensions, crisp series lines).
-* **HTTP Status Code Consistency (403 vs 404):**
-  * Ensured carrier mismatch returns explicit HTTP 403 (Forbidden) rather than masking resources as 404 or returning empty arrays, aligning with the project requirements.
-* **Comprehensive Integration Tests (`backend/test_api.py`):**
-  * Verified multi-tenant authorization boundaries, token expiration, non-existent entity responses, and window boundary validation (`to_t < from_t`).
+* **Dependency Debugging & Vite / Plugin-React Lockfile Reconciliation:**
+  * Fixed an npm resolution failure when `vite@8.3.3` was specified in `package.json` while `@vitejs/plugin-react@^4.3.3` required Vite <= 7, which caused `npm ci` inside Docker to crash with `ERESOLVE`. Pinned `vite: ^5.4.11` and regenerated `package-lock.json` ensuring clean `npm ci` builds in Docker and local environments.
+* **Bidirectional Zoom & Smooth Scrubbing UX:**
+  * Implemented bidirectional timeline zoom controls (**1m, 5m, 10m, 30m, 1h**) allowing dispatchers to seamlessly drill down to 1 Hz precision or zoom out for macro shifts.
+  * Fixed scrubbing request floods by debouncing window queries (120ms) and configured `placeholderData: (previousData) => previousData` in TanStack Query so the uPlot canvas never flickers or gets replaced by a loading spinner.
+  * Fixed the `t = 86400` duration boundary bug: AI initially allowed `chunkIndex` to overflow to chunk 144 (`fromT=86400, toT=86400`) which returned 0 samples since 1 Hz telemetry ends at `t = 86399`. Clamped `chunkIndex` to `totalChunks - 1` (chunk 143: `85800..86400`) and resolved the final second gracefully.
+* **Auth Lifecycle & Cache Invalidation:**
+  * Implemented automatic sign-out and TanStack Query cache purging (`queryClient.clear()`) when an HTTP 401 response is intercepted via a custom `'auth:unauthorized'` event, preventing multi-tenant data leaks between sessions.
+* **Data Fetching Error UI:**
+  * Replaced silent failures with explicit error alert banners and "Retry" buttons for both telemetry windows and the 24h summary chart.
+* **PostgreSQL Column Types:**
+  * Corrected SQLAlchemy columns from generic `Float` (which defaults to 8-byte `DOUBLE PRECISION` on Postgres) to explicit `DOUBLE_PRECISION` for coordinates and `REAL` (4 bytes) for speed and fuel.
+* **Comprehensive Integration & Unit Tests:**
+  * Extended `backend/test_api.py` with explicit tests for expired JWT tokens, tampered signatures, and malformed auth headers.
+  * Added 18 unit and integration tests on the frontend using Vitest and React Testing Library (`formatters.test.ts`, `api.test.ts`, `useTripReplay.test.tsx`).
+  * Configured Python static type checking (`mypy`) and unified quality checks into a single root command (`npm run check` / `./check.sh` / `make check`).
 
 ---
 
 ## 2. Prompts & Approaches That Worked Well
 
 1. **Strict Context Injection from Project Rules:**
-   * Feeding [RULES.md](.aiassistant/rules/RULES.md) into the prompt context at the start prevented common AI hallucinations (such as writing redundant sign-up flows, using Redux, or introducing `any` in TypeScript).
+   * Feeding project constraints into the prompt context prevented common AI hallucinations (such as writing redundant sign-up flows, using Redux, or introducing `any` in TypeScript).
 2. **Explicit Algorithm Framing for Windowing:**
-   * Prompting for *"deterministic chunking based on absolute time intervals (e.g. 600s) + adjacent chunk prefetching with TanStack Query"* generated a rock-solid, production-grade custom hook without memory leaks or race conditions.
+   * Prompting for *\"deterministic chunking based on absolute time intervals + adjacent chunk prefetching with TanStack Query\"* generated a solid mathematical foundation for timeline scrubbing.
 3. **Database Performance Directives:**
-   * Instructing AI to *"use raw asyncpg copy_records_to_table with temporary index drop rather than ORM session inserts"* yielded a seed script that finished in under 5 seconds instead of 4 minutes.
+   * Instructing AI to *\"use raw asyncpg copy_records_to_table with temporary index drop rather than ORM session inserts\"* yielded a seed script that finished in under 5 seconds instead of 4 minutes.
 4. **FastAPI Dependencies for RBAC:**
-   * Specifying *"enforce carrier check in FastAPI route dependencies and raise 403 on cross-tenant requests"* resulted in clean, DRY code without repetitive `if-else` boilerplate across endpoints.
+   * Specifying *\"enforce carrier check in FastAPI route dependencies and raise 403 on cross-tenant requests\"* resulted in clean, DRY code without repetitive `if-else` boilerplate across endpoints.
 
 ---
 
 ## 3. Where AI Failed or Required Correction
 
-1. **NPM Package Version Hallucination:**
-   * When instructed to include `uplot-react` in `package.json`, AI hallucinated version `^1.3.2`. The latest version on npm was `1.2.4`, which broke `npm install` inside Docker.
-   * *Resolution:* Queried the npm registry, updated `package.json` to valid versions (`1.2.4` and `uplot@^1.6.32`), and generated a locked `package-lock.json`.
-2. **CDN vs Local NPM Imports:**
-   * Initially, AI placed external unpkg CDN links in `index.html` for Leaflet and uPlot CSS, violating the principle of self-contained local deployment.
-   * *Resolution:* Replaced CDN links with direct npm package CSS imports in `src/main.tsx` (`leaflet/dist/leaflet.css`, `uplot/dist/uPlot.min.css`).
-3. **Overly Eager SQLAlchemy Lazy Loading:**
-   * Standard ORM relationship definitions default to lazy loading, which fails in asynchronous SQLAlchemy sessions.
-   * *Resolution:* Explicitly configured `lazy="raise"` on all model relationships and wrote explicit queries with joins to prevent accidental runtime errors.
-4. **TypeScript Strictness Guardrails:**
-   * AI occasionally defaulted to loose typing for API error handlers and Leaflet event objects.
-   * *Resolution:* Enforced strict TypeScript compiler flags (`noImplicitAny: true`, `strict: true`) and created dedicated type definitions in `api.ts` to satisfy the "zero `any`" constraint.
+1. **NPM Package Version Conflict & Vite 8 Hallucination:**
+   * AI specified `vite: 8.3.3` in `package.json`, but `@vitejs/plugin-react@^4.3.3` only supports Vite <= 7, which broke `npm ci` inside Docker.
+   * *Resolution:* Pinned `vite: ^5.4.11`, regenerated `package-lock.json`, and tested `npm ci` across Docker and host.
+2. **Missing Zoom & Timeline Boundary Edge Case (t=86400):**
+   * AI only implemented a fixed 600-second window without zoom controls, and calculated `chunkIndex = Math.floor(currentTime / chunkSize)`, which at `currentTime = 86400` resulted in `fromT=86400, toT=86400` (returning an empty array and blank screen).
+   * *Resolution:* Hand-coded bidirectional zoom levels (1m, 5m, 10m, 30m, 1h), clamped `chunkIndex` to `totalChunks - 1`, and clamped sample lookup.
+3. **Scrubbing Jank & Replacing Chart with Spinner:**
+   * AI triggered telemetry fetch queries on every single slider change without debounce, and swapped the uPlot canvas for a spinner during pending queries.
+   * *Resolution:* Debounced fetch triggers during scrubbing (120ms) and used `placeholderData` in TanStack Query to preserve previous samples while fetching new windows.
+4. **SQLAlchemy Type Mapping:**
+   * AI used generic `Float` instead of PostgreSQL `REAL` for speed and fuel metrics.
+   * *Resolution:* Imported explicit `DOUBLE_PRECISION` and `REAL` types from `sqlalchemy.dialects.postgresql`.
+5. **Missing Error States & Session Cleanup:**
+   * AI omitted query cache invalidation on logout and error banners on data fetch failure.
+   * *Resolution:* Added `queryClient.clear()` on sign out, 401 interception, and user-facing retry banners.
 
 ---
 
 ## 4. Overall Assessment
 
-AI acted as an ultra-fast copilot for boilerplate, schema definition, and mathematical scaffolding (binary search, chunk boundaries). Human oversight was crucial for validating library versions, enforcing strict security boundaries (RBAC 403 vs 404), fine-tuning UI responsiveness during scrubbing, and maintaining architectural simplicity.
+AI acted as an ultra-fast copilot for boilerplate, schema definition, and initial scaffolding. Human oversight was critical for validating dependency compatibility, handling edge cases at timeline boundaries, ensuring smooth 60 FPS scrubbing without jank, enforcing security boundaries (RBAC 403 vs 404), and verifying that all written documentation matches the actual codebase.

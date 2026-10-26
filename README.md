@@ -1,6 +1,6 @@
 # Waypoint — Fleet Telemetry Platform
 
-Waypoint is a high-performance fleet telemetry replay portal for dispatchers and support staff. It allows users to scrub second-by-second vehicle telemetry (GPS route, speed over time, and fuel percentage) across 24-hour trips (~86,400 data points per trip) with instantaneous, bidirectional timeline navigation and strict multi-tenant access control.
+Waypoint is a high-performance fleet telemetry replay portal for dispatchers and support staff. It allows users to scrub and zoom second-by-second vehicle telemetry (GPS route, speed over time, and fuel percentage) across 24-hour trips (~86,400 data points per trip) with instantaneous, bidirectional timeline navigation and strict multi-tenant access control.
 
 ---
 
@@ -8,7 +8,7 @@ Waypoint is a high-performance fleet telemetry replay portal for dispatchers and
 
 ### Prerequisites
 * Docker & Docker Compose v2+
-* Node.js 20+ (for local linting/typechecking)
+* Node.js 20+ (for local linting/testing)
 * Ports `5173`, `8000`, and `5432` free
 
 ### 1. Start the Stack
@@ -45,37 +45,47 @@ All seeded accounts use password `waypoint-demo`:
 
 ---
 
-## Code Quality, Formatting, Type Checking & Tests
+## Unified Quality Checks (One Single Command)
 
-Both frontend and backend are configured with automated formatters, strict type checkers, and test suites that pass cleanly.
+As required by the assignment brief, all formatting, linting, type checking, and test suites across both frontend and backend pass cleanly and can be executed via a **single root command**:
 
-### 1. Frontend (TypeScript, ESLint & Prettier)
-Enforces strict TypeScript (`noImplicitAny: true`, **zero `any` types**), ESLint, and Prettier code style:
+```bash
+# Unified check command (backend ruff + mypy + pytest & frontend tsc + eslint + prettier + vitest):
+npm run check
+# or alternatively:
+./check.sh
+# or:
+make check
+```
+
+### Individual Check Commands
+
+#### 1. Backend (Ruff, Mypy & Pytest)
+```bash
+# Static type checking:
+docker compose exec backend mypy .
+
+# Linting & code formatting verification:
+docker compose exec backend ruff check .
+docker compose exec backend ruff format --check .
+
+# Run backend test suite (RBAC isolation, token expiration & telemetry range tests):
+docker compose exec backend pytest -v
+```
+
+#### 2. Frontend (TypeScript, ESLint, Prettier & Vitest)
 ```bash
 cd frontend
-npm install
 
-# Run frontend check (typecheck + lint + prettier verification):
+# Run frontend check (typecheck + lint + prettier check + tests):
 npm run check
+
+# Run frontend test suite:
+npm test
 
 # Auto-format all frontend files:
 npm run format
 ```
-
-### 2. Backend (Ruff & Pytest)
-Configured with **Ruff** (modern, ultra-fast Python linter & formatter) and **Pytest**:
-```bash
-# Check linting and code formatting:
-docker compose exec backend ruff check .
-docker compose exec backend ruff format --check .
-
-# Auto-format backend code:
-docker compose exec backend ruff format .
-
-# Run end-to-end integration test suite:
-docker compose exec backend pytest -v
-```
-*(Tests cover RBAC tenant isolation with HTTP 403 enforcement, windowed range queries, and authentication)*
 
 ---
 
@@ -83,17 +93,20 @@ docker compose exec backend pytest -v
 
 For detailed rationale and tradeoffs, refer to [DECISIONS.md](DECISIONS.md).
 
-1. **Deterministic Time-Window Chunking:**
+1. **Deterministic Time-Window Chunking & Bidirectional Zoom:**
    * A full 24-hour trip contains 86,400 data points. Delivering this in a single payload is prohibited by design.
-   * Telemetry is requested in discrete **600-second (10-minute) windows** (`from_t`..`to_t`).
-   * The custom hook [`useTripReplay`](frontend/src/hooks/useTripReplay.ts) manages bidirectional prefetching (`chunkIndex ± 1`), leveraging TanStack Query v5 with `staleTime: Infinity` to ensure smooth 60 FPS scrubbing without loading spinners.
-2. **PostgreSQL 16 Composite B-Tree Index:**
+   * Telemetry is requested in discrete windows on demand with **bidirectional zoom** (**1m, 5m, 10m, 30m, 1h**).
+   * The custom hook [`useTripReplay`](frontend/src/hooks/useTripReplay.ts) manages bidirectional prefetching (`chunkIndex ± 1`), leveraging TanStack Query v5 with `staleTime: Infinity` and `placeholderData` to ensure smooth 60 FPS scrubbing without loading spinners or layout shifts.
+   * Rapid scrubbing inputs are debounced by 120ms to prevent server query floods, while the playhead needle and telemetry gauges update in real time.
+2. **PostgreSQL 16 Composite B-Tree Index & REAL Storage:**
    * Table `telemetry_samples` features a composite B-Tree index on `(trip_id, t)`.
+   * Coordinates use `DOUBLE PRECISION` (8 bytes) for GPS accuracy, while metrics (`speed_kph`, `fuel_pct`) use `REAL` (4 bytes).
    * Window queries run as sub-millisecond index-only range scans ordered by `t ASC`.
 3. **Server-Enforced Multi-Tenancy (RBAC):**
    * Permissions are enforced directly on the server (`backend/api.py`).
    * `DISPATCHER` access is strictly scoped to their assigned `carrier_id`.
    * Any cross-tenant attempt returns explicit **HTTP 403 (Forbidden)**, never masking data or failing open.
+   * On HTTP 401, the frontend intercepts the response, flushes the TanStack Query cache (`queryClient.clear()`), and resets auth state.
 4. **Hardware-Accelerated Canvas Rendering:**
    * Uses **uPlot** (HTML5 2D Canvas) for speed and fuel telemetry timelines, rendering thousands of points in under 2ms.
    * Interactive Leaflet map dynamically binds to the active telemetry point and window path.
@@ -105,6 +118,9 @@ For detailed rationale and tradeoffs, refer to [DECISIONS.md](DECISIONS.md).
 ```text
 .
 ├── docker-compose.yml          # Single-command local environment (db, backend, frontend)
+├── check.sh                    # Unified one-command quality & test runner
+├── Makefile                    # Make targets for check, test, lint, typecheck, format
+├── package.json                # Root package for running 'npm run check'
 ├── DECISIONS.md                # Architectural decisions, tradeoffs & benchmark rationale
 ├── AI-NOTES.md                 # AI collaboration disclosure & prompt details
 ├── RULES.md                    # Core project constraints & strict requirements
@@ -115,28 +131,32 @@ For detailed rationale and tradeoffs, refer to [DECISIONS.md](DECISIONS.md).
 │   ├── main.py                 # FastAPI application entrypoint & middleware
 │   ├── api.py                  # Fleet endpoints, RBAC dependencies & windowing logic
 │   ├── auth.py                 # JWT issuance, password verification & user resolution
-│   ├── models.py               # SQLAlchemy 2.0 async models with naming conventions
+│   ├── models.py               # SQLAlchemy 2.0 async models with PostgreSQL REAL/DOUBLE_PRECISION
 │   ├── database.py             # Async database session & engine management
 │   ├── seed.py                 # 691k row high-throughput binary seed script
-│   ├── test_api.py             # RBAC & windowing integration test suite
+│   ├── test_api.py             # RBAC, token expiration & windowing integration test suite
 │   ├── ruff.toml               # Ruff linter and formatter configuration
+│   ├── mypy.ini                # Python static type checker configuration
 │   ├── requirements.txt        # Pinned Python dependencies
 │   └── Dockerfile              # Python 3.12-slim runtime
 └── frontend/
     ├── src/
     │   ├── api.ts              # Strict TypeScript client & typed API models (zero any)
+    │   ├── api.test.ts         # Tests for token handling, error parsing, 401 dispatch
     │   ├── hooks/
-    │   │   └── useTripReplay.ts# Window calculation, prefetching & scrubbing loop
+    │   │   ├── useTripReplay.ts# Window calculation, zoom, prefetching & scrubbing loop
+    │   │   └── useTripReplay.test.tsx # Tests for boundary clamping, zoom levels, seeking
     │   ├── components/
     │   │   ├── LoginForm.tsx   # Sign-In UI with demo credential auto-fill
-    │   │   ├── VehicleList.tsx # Multi-tenant vehicle & trip listing
-    │   │   └── TripReplayView.tsx # Scrubbable uPlot timeline + Leaflet map view
+    │   │   ├── VehicleList.tsx # Multi-tenant vehicle & trip listing with error UI
+    │   │   └── TripReplayView.tsx # Scrubbable uPlot timeline with zoom + Leaflet map view
     │   ├── utils/
-    │   │   └── formatters.ts   # Centralized date, time, speed, fuel formatters
-    │   ├── App.tsx             # Main view router & auth context
+    │   │   ├── formatters.ts   # Centralized date, time, speed, fuel formatters
+    │   │   └── formatters.test.ts # Unit tests for formatting logic
+    │   ├── App.tsx             # Main view router, 401 interception & query cache purge
     │   └── main.tsx            # React 18 & TanStack Query setup
     ├── .prettierrc             # Prettier configuration
-    ├── package.json            # Vite, React, TanStack Query, uPlot, Leaflet
+    ├── package.json            # Vite 5, React, TanStack Query, Vitest, uPlot, Leaflet
     └── tsconfig.json           # Strict TypeScript configuration
 ```
 

@@ -1,8 +1,12 @@
 """Unit/integration tests for fleet API routes, RBAC, and telemetry windowing."""
 
+from datetime import UTC, datetime, timedelta
+
+import jwt
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from config import get_settings
 from database import engine
 from main import app
 
@@ -53,6 +57,42 @@ async def tokens(client: AsyncClient) -> dict[str, str]:
         "polder": r2.json()["access_token"],
         "staff": r3.json()["access_token"],
     }
+
+
+@pytest.mark.anyio
+async def test_token_validation_and_expiration(client: AsyncClient, tokens: dict[str, str]):
+    """Verify expired token, tampered signature, and malformed tokens return 401."""
+    settings = get_settings()
+
+    # 1. Tampered / invalid signature token
+    tampered_token = tokens["northwind"] + "tampered"
+    r_tampered = await client.get(
+        "/vehicles", headers={"Authorization": f"Bearer {tampered_token}"}
+    )
+    assert r_tampered.status_code == 401
+    assert "Invalid or expired token" in r_tampered.text
+
+    # 2. Malformed token string
+    r_malformed = await client.get(
+        "/vehicles", headers={"Authorization": "Bearer not-a-valid-token"}
+    )
+    assert r_malformed.status_code == 401
+    assert "Invalid or expired token" in r_malformed.text
+
+    # 3. Expired token
+    expired_payload = {
+        "sub": "1",
+        "role": "DISPATCHER",
+        "carrier_id": 1,
+        "iat": datetime.now(UTC) - timedelta(hours=2),
+        "exp": datetime.now(UTC) - timedelta(hours=1),
+    }
+    expired_token = jwt.encode(
+        expired_payload, settings.secret_key, algorithm=settings.jwt_algorithm
+    )
+    r_expired = await client.get("/vehicles", headers={"Authorization": f"Bearer {expired_token}"})
+    assert r_expired.status_code == 401
+    assert "Invalid or expired token" in r_expired.text
 
 
 @pytest.mark.anyio

@@ -6,7 +6,8 @@
  * Formats seconds into HH:MM:SS format (e.g. 43200 -> "12:00:00").
  */
 export function formatSeconds(totalSec: number): string {
-  const sec = Math.max(0, Math.floor(totalSec));
+  if (totalSec == null || Number.isNaN(totalSec) || totalSec <= 0) return '00:00:00';
+  const sec = Math.floor(totalSec);
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   const s = sec % 60;

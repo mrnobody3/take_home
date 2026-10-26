@@ -52,6 +52,8 @@ export const VehicleList: React.FC<VehicleListProps> = ({
     data: trips,
     isLoading: isLoadingTrips,
     isError: isTripsError,
+    error: tripsError,
+    refetch: refetchTrips,
   } = useQuery<Trip[], ApiError>({
     queryKey: ['vehicle-trips', selectedVehicleId],
     queryFn: () => {
@@ -322,8 +324,18 @@ export const VehicleList: React.FC<VehicleListProps> = ({
               Loading trips for {activeVehicle.plate}…
             </div>
           ) : isTripsError ? (
-            <div className="p-4 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-xl">
-              Failed to load trips for vehicle #{activeVehicle.id}.
+            <div className="p-4 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-center justify-between">
+              <span>
+                Failed to load trips for vehicle #{activeVehicle.id} (
+                {tripsError instanceof Error ? tripsError.message : 'Error'}).
+              </span>
+              <button
+                type="button"
+                onClick={() => refetchTrips()}
+                className="px-2 py-0.5 rounded bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 font-medium transition-colors"
+              >
+                Retry
+              </button>
             </div>
           ) : !trips || trips.length === 0 ? (
             <div className="p-8 text-center text-slate-500 text-xs">

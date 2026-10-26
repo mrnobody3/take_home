@@ -28,7 +28,7 @@ router = APIRouter(tags=["fleet"], dependencies=[Depends(get_current_user)])
 
 # Upper bound on points per telemetry response (1 h at 1 Hz, or a whole
 # 24 h trip at step=24). Keeps every payload small regardless of zoom level.
-MAX_POINTS_PER_WINDOW = 3600
+MAX_POINTS_PER_WINDOW = 3601
 
 
 # --------------------------------------------------------------------------- #
@@ -122,7 +122,7 @@ async def _trip_carrier_id(session: SessionDep, trip_id: int) -> int:
     return carrier_id
 
 
-def _vehicle_summary_query() -> Select[tuple[int, str, str, str, int, str, int, datetime | None]]:
+def _vehicle_summary_query() -> Select[int, str, str, str, int, str, int, datetime]:
     """Vehicles with carrier name, trip count and latest trip start — one query, no N+1."""
     return (
         select(

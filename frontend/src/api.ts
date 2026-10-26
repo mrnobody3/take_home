@@ -185,6 +185,9 @@ export async function apiFetch<T>(
   if (!response.ok) {
     if (response.status === 401) {
       clearStoredAuth();
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('auth:unauthorized'));
+      }
     }
 
     let detail = `Request failed with status ${response.status}`;
