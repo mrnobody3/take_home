@@ -29,20 +29,43 @@ class Settings(BaseSettings):
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _parse_cors_origins(cls, value: Any) -> list[str]:
-        """Parse comma-separated or JSON list of origins into a list of strings."""
+        """Parse comma-separated or JSON list of origins, normalizing trailing slashes & schemes."""
+        raw_items: list[str] = []
         if isinstance(value, str):
             value = value.strip()
             if value.startswith("[") and value.endswith("]"):
                 try:
                     parsed = json.loads(value)
                     if isinstance(parsed, list):
-                        return [str(origin).strip() for origin in parsed if str(origin).strip()]
+                        raw_items = [str(item) for item in parsed]
                 except Exception:
                     pass
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
-        if isinstance(value, (list, tuple, set)):
-            return [str(origin).strip() for origin in value if str(origin).strip()]
-        return value
+            if not raw_items:
+                raw_items = value.split(",")
+        elif isinstance(value, (list, tuple, set)):
+            raw_items = [str(item) for item in value]
+        else:
+            return value
+
+        normalized: list[str] = []
+        for raw in raw_items:
+            clean = raw.strip().rstrip("/")
+            if not clean:
+                continue
+            if clean == "*":
+                if clean not in normalized:
+                    normalized.append(clean)
+                continue
+            if clean.startswith(("http://", "https://")):
+                if clean not in normalized:
+                    normalized.append(clean)
+            else:
+                for scheme in ("https://", "http://"):
+                    full = f"{scheme}{clean}"
+                    if full not in normalized:
+                        normalized.append(full)
+
+        return normalized
 
     @field_validator("database_url")
     @classmethod

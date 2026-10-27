@@ -6,7 +6,7 @@ services:
     region: frankfurt
     plan: free
     buildCommand: pip install -r backend/requirements.txt
-    startCommand: python backend/seed.py --if-empty && cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -30,7 +30,10 @@ services:
         destination: /index.html
     envVars:
       - key: VITE_API_URL
-        value: https://waypoint-backend.onrender.com
+        fromService:
+          type: web
+          name: waypoint-backend
+          envVarKey: RENDER_EXTERNAL_URL
 
 databases:
   # 3. Managed PostgreSQL Database

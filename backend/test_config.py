@@ -26,6 +26,24 @@ def test_cors_origins_comma_separated_env(monkeypatch: pytest.MonkeyPatch) -> No
     ]
 
 
+def test_cors_origins_normalization(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Origins with trailing slashes, missing schemes, or duplicates are normalized."""
+    monkeypatch.setenv(
+        "CORS_ORIGINS",
+        "https://waypoint-frontend.onrender.com,http://localhost:5173,"
+        "https://waypoint-frontend-gvrq.onrender.com/,https://waypoint-frontend-gvrq.onrender.com,"
+        "waypoint-frontend-gvrq.onrender.com/,waypoint-frontend-gvrq.onrender.com",
+    )
+    s = Settings(secret_key="x" * 32)
+    assert "https://waypoint-frontend-gvrq.onrender.com" in s.cors_origins
+    assert "https://waypoint-frontend.onrender.com" in s.cors_origins
+    assert "http://localhost:5173" in s.cors_origins
+    # Ensure no trailing slashes remain
+    assert all(not origin.endswith("/") for origin in s.cors_origins)
+    # Ensure all entries have valid scheme
+    assert all(origin.startswith(("http://", "https://")) for origin in s.cors_origins)
+
+
 def test_cors_origins_json_list_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CORS_ORIGINS", '["https://waypoint.app", "https://admin.waypoint.app"]')
     s = Settings(secret_key="x" * 32)
@@ -45,7 +63,7 @@ def test_cors_origins_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_cors_origins_direct_list() -> None:
-    s = Settings(secret_key="x" * 32, cors_origins=["http://a.com", "http://b.com"])
+    s = Settings(secret_key="x" * 32, cors_origins=["http://a.com/", "http://b.com"])
     assert s.cors_origins == ["http://a.com", "http://b.com"]
 
 
